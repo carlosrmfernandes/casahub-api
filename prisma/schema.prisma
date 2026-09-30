@@ -1,0 +1,276 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+enum Category {
+  MORADIA
+  CONTAS_CASA
+  TRANSPORTE
+  SAUDE
+  EDUCACAO
+  ASSINATURAS
+  IMPOSTOS
+  DIVIDAS
+  SERVICOS
+  MERCADO
+  LAZER
+  OUTROS
+}
+
+enum BillStatus {
+  PENDENTE
+  PAGO
+  IGNORADA
+}
+
+enum PaymentMethod {
+  PIX
+  BOLETO
+  DEBITO
+  DEBITO_AUTOMATICO
+  DINHEIRO
+  CARTAO
+}
+
+enum Recurrence {
+  NONE
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum MovementType {
+  DEPOSITO
+  RETIRADA
+}
+
+model Household {
+  id             String          @id @default(cuid())
+  name           String
+  createdAt      DateTime        @default(now())
+  users          User[]
+  recurringBills RecurringBill[]
+  bills          Bill[]
+  cards          CreditCard[]
+  incomes        Income[]
+  reserves       Reserve[]
+  tasks          Task[]
+  shoppingItems  ShoppingItem[]
+  events         Event[]
+}
+
+/// Membro da família. Pode ter login (email + senha) ou ser só um responsável (ex: filho).
+model User {
+  id             String          @id @default(cuid())
+  householdId    String
+  household      Household       @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  name           String
+  email          String?         @unique
+  passwordHash   String?
+  role           Role            @default(MEMBER)
+  color          String          @default("#0f766e")
+  createdAt      DateTime        @default(now())
+  recurringBills RecurringBill[]
+  bills          Bill[]
+  tasks          Task[]
+  events         Event[]
+  cardPurchases  CardPurchase[]
+
+  @@index([householdId])
+}
+
+/// Conta fixa: cadastrada uma vez, gera um lançamento (Bill) em cada mês do período.
+model RecurringBill {
+  id            String         @id @default(cuid())
+  householdId   String
+  household     Household      @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  name          String
+  category      Category       @default(OUTROS)
+  amountCents   Int
+  /// Valor muda todo mês (água, luz...). O lançamento nasce como "estimado".
+  variable      Boolean        @default(false)
+  dueDay        Int            @default(10)
+  /// Formato YYYY-MM
+  startMonth    String
+  /// Formato YYYY-MM. Nulo = sem fim.
+  endMonth      String?
+  method        PaymentMethod?
+  responsibleId String?
+  responsible   User?          @relation(fields: [responsibleId], references: [id], onDelete: SetNull)
+  active        Boolean        @default(true)
+  notes         String?
+  createdAt     DateTime       @default(now())
+  bills         Bill[]
+
+  @@index([householdId])
+}
+
+/// Conta a pagar de um mês específico (gerada de uma conta fixa ou avulsa).
+model Bill {
+  id              String         @id @default(cuid())
+  householdId     String
+  household       Household      @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  recurringBillId String?
+  recurringBill   RecurringBill? @relation(fields: [recurringBillId], references: [id], onDelete: SetNull)
+  month           String
+  name            String
+  category        Category       @default(OUTROS)
+  amountCents     Int
+  estimated       Boolean        @default(false)
+  dueDate         DateTime       @db.Date
+  status          BillStatus     @default(PENDENTE)
+  paidAt          DateTime?      @db.Date
+  method          PaymentMethod?
+  responsibleId   String?
+  responsible     User?          @relation(fields: [responsibleId], references: [id], onDelete: SetNull)
+  notes           String?
+  createdAt       DateTime       @default(now())
+
+  @@unique([recurringBillId, month])
+  @@index([householdId, month])
+  @@index([householdId, dueDate])
+}
+
+model CreditCard {
+  id          String         @id @default(cuid())
+  householdId String
+  household   Household      @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  name        String
+  closingDay  Int
+  dueDay      Int
+  limitCents  Int?
+  color       String         @default("#7c3aed")
+  createdAt   DateTime       @default(now())
+  purchases   CardPurchase[]
+  invoices    CardInvoice[]
+
+  @@index([householdId])
+}
+
+/// Compra no cartão. Parcelada: aparece de firstInvoiceMonth até lastInvoiceMonth.
+/// Recorrente (assinatura): aparece todo mês até ser encerrada.
+model CardPurchase {
+  id                String     @id @default(cuid())
+  cardId            String
+  card              CreditCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  description       String
+  category          Category   @default(OUTROS)
+  totalCents        Int
+  installments      Int        @default(1)
+  recurring         Boolean    @default(false)
+  purchaseDate      DateTime   @db.Date
+  firstInvoiceMonth String
+  lastInvoiceMonth  String?
+  responsibleId     String?
+  responsible       User?      @relation(fields: [responsibleId], references: [id], onDelete: SetNull)
+  createdAt         DateTime   @default(now())
+
+  @@index([cardId, firstInvoiceMonth])
+}
+
+/// Estado da fatura de um mês (pagamento e valor real, se diferente do calculado).
+model CardInvoice {
+  id            String     @id @default(cuid())
+  cardId        String
+  card          CreditCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  month         String
+  status        BillStatus @default(PENDENTE)
+  paidAt        DateTime?  @db.Date
+  overrideCents Int?
+
+  @@unique([cardId, month])
+}
+
+model Income {
+  id          String    @id @default(cuid())
+  householdId String
+  household   Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  name        String
+  amountCents Int
+  day         Int?
+  recurring   Boolean   @default(true)
+  startMonth  String
+  endMonth    String?
+  createdAt   DateTime  @default(now())
+
+  @@index([householdId])
+}
+
+model Reserve {
+  id          String            @id @default(cuid())
+  householdId String
+  household   Household         @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  name        String
+  goalCents   Int?
+  createdAt   DateTime          @default(now())
+  movements   ReserveMovement[]
+
+  @@index([householdId])
+}
+
+model ReserveMovement {
+  id          String       @id @default(cuid())
+  reserveId   String
+  reserve     Reserve      @relation(fields: [reserveId], references: [id], onDelete: Cascade)
+  type        MovementType
+  amountCents Int
+  date        DateTime     @db.Date
+  note        String?
+  createdAt   DateTime     @default(now())
+
+  @@index([reserveId])
+}
+
+model Task {
+  id          String     @id @default(cuid())
+  householdId String
+  household   Household  @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  title       String
+  notes       String?
+  assigneeId  String?
+  assignee    User?      @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+  dueDate     DateTime?  @db.Date
+  recurrence  Recurrence @default(NONE)
+  done        Boolean    @default(false)
+  doneAt      DateTime?
+  createdAt   DateTime   @default(now())
+
+  @@index([householdId, done])
+}
+
+model ShoppingItem {
+  id          String    @id @default(cuid())
+  householdId String
+  household   Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  name        String
+  quantity    String?
+  checked     Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+
+  @@index([householdId])
+}
+
+model Event {
+  id          String    @id @default(cuid())
+  householdId String
+  household   Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  title       String
+  date        DateTime  @db.Date
+  time        String?
+  notes       String?
+  memberId    String?
+  member      User?     @relation(fields: [memberId], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+
+  @@index([householdId, date])
+}
